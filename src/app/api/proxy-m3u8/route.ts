@@ -89,7 +89,57 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    // 后端 MIME Sniffing: 防御伪装成 m3u8 的大文件二进制流
+    // 使用白名单策略：只有明确属于文本/m3u8 类型的才放行解析
+    const contentType = (response.headers.get('content-type') || '').toLowerCase();
+    const isTextType = (
+      contentType === '' ||                                        // 无 Content-Type 时保守放行（后续有内容校验兜底）
+      contentType.includes('application/vnd.apple.mpegurl') ||     // 标准 m3u8
+      contentType.includes('application/x-mpegurl') ||             // 兼容 m3u8
+      contentType.includes('audio/mpegurl') ||                     // 兼容 m3u8
+      contentType.includes('text/') ||                             // text/plain 等
+      contentType.includes('application/json')                     // 部分 API 返回 JSON 格式的错误
+    );
+
+    if (!isTextType) {
+      if (source === 'directplay') {
+        console.log(`[Proxy-M3U8] 检测到非文本媒体流 (Content-Type: ${contentType}), 针对 directplay 直链代理模式，直接透传二进制流, URL: ${m3u8Url}`);
+        // 构造一个新的 Response 对象用于二进制直接透传，确保包含了支持跨域的 header
+        const newHeaders = new Headers(response.headers);
+        newHeaders.set('Access-Control-Allow-Origin', '*');
+
+        // 如果源站返回了跨站相关的禁止头，尽量移除它们
+        newHeaders.delete('X-Frame-Options');
+        newHeaders.delete('Content-Security-Policy');
+
+        return new NextResponse(response.body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: newHeaders,
+        });
+      }
+
+      console.warn(`[Proxy-M3U8] 拦截到非文本媒体流 (Content-Type: ${contentType}), 拒绝按文本解析, URL: ${m3u8Url}`);
+      return NextResponse.json(
+        {
+          error: 'Unsupported Media Type',
+          details: `The source returned Content-Type "${contentType}", which is not a text m3u8 playlist.`,
+          fallbackToDirect: true,
+          originalUrl: m3u8Url
+        },
+        { status: 415, headers: { 'Access-Control-Allow-Origin': '*' } }
+      );
+    }
+
     let m3u8Content = await response.text();
+
+    // 二次内容校验：即使 Content-Type 通过了白名单，检查实际内容是否为有效的 m3u8
+    // 有些服务器返回 text/plain 但实际内容是 HTML 错误页或其他格式
+    const trimmedContent = m3u8Content.trimStart();
+    if (trimmedContent.length > 0 && !trimmedContent.startsWith('#EXTM3U') && !trimmedContent.startsWith('#EXT')) {
+      console.warn(`[Proxy-M3U8] 内容校验失败：响应体不以 #EXTM3U 或 #EXT 开头, 可能非有效 m3u8, URL: ${m3u8Url}`);
+      // 不直接拒绝（可能是不规范但仍可播放的 m3u8），仅打印警告继续处理
+    }
 
     // 执行去广告逻辑
     const config = await getConfig();

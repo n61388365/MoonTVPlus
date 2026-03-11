@@ -316,6 +316,22 @@ export async function getVideoResolutionFromM3u8(
       hls.on(Hls.Events.ERROR, (event: any, data: any) => {
         console.error('HLS错误:', data);
         if (data.fatal) {
+          const statusCode = data.response?.code || data.response?.status;
+          // 防止 415 代理兜底熔断导致正常的二进制源在优选逻辑中被剔除
+          if (statusCode === 415 && (m3u8Url.includes('/api/proxy-m3u8') || m3u8Url.includes('/api/proxy/vod/m3u8'))) {
+            console.log('[测速] 测速通道嗅探到这是底层的媒体流文件，免测速通过');
+            clearTimeout(timeout);
+            hls.destroy();
+            video.remove();
+            resolve({
+              quality: '原生画质',
+              loadSpeed: '直连',
+              pingTime: 10,
+              bitrate: '未知',
+            });
+            return;
+          }
+
           clearTimeout(timeout);
           hls.destroy();
           video.remove();
