@@ -7315,6 +7315,11 @@ function PlayPageClient() {
           // 条件：当前播放时间 < 10秒 且 播放记录时间 > 10秒
           const checkPlayRecordJump = async () => {
             try {
+              // 仅在进入播放后的首次检查时处理，避免本次会话新生成的记录触发恢复按钮
+              if (!playRecordJumpInitialCheckRef.current) {
+                return;
+              }
+
               // 如果用户已经关闭过跳转按钮，不再显示
               if (playRecordJumpDismissedRef.current) {
                 return;
